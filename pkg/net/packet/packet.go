@@ -61,7 +61,7 @@ func (this *Packet) String() string {
 
 	b := this.Bytes()
 	bLen := len(b)
-	maxRows := int(math.Floor(float64(bLen / 16)))
+	maxRows := int(math.Ceil(float64(bLen) / float64(16)))
 
 	for rNum := 0; rNum < maxRows; rNum++ {
 		offset := rNum * 16

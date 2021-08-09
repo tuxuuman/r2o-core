@@ -65,7 +65,12 @@ func (this *Packet) String() string {
 
 	for rNum := 0; rNum < maxRows; rNum++ {
 		offset := rNum * 16
-		bRow := b[offset : offset+16]
+		var bRow []byte
+		if bLen-offset > 16 {
+			bRow = b[offset : offset+16]
+		} else {
+			bRow = b[offset:]
+		}
 		result += fmt.Sprintf("%06d", rNum+1) + "    " + fmt.Sprintf("% x", bRow) + "    "
 		for _, c := range bRow {
 			if c >= 33 && c <= 126 {

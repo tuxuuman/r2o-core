@@ -9,45 +9,49 @@ import (
 	"net"
 	"runtime/debug"
 
+	"github.com/tuxuuman/r2o-core/internal/events"
 	"github.com/tuxuuman/r2o-core/pkg/net/packet"
 	"github.com/tuxuuman/r2o-core/resources"
 )
 
-var acceptConnectionPacket packet.Packet = packet.CreatePacketFromBytesOrPanic(resources.ACP_PACKET)
+var acceptConnectionPacket *packet.Packet = packet.CreatePacketFromBytesOrPanic(resources.ACP_PACKET)
 
-type PacketHandler = func(p packet.Packet)
+type packetHandler struct {
+	Handle func(p *packet.Packet, data interface{})
+	Struct interface{}
+	Once   bool
+}
 
 type Client struct {
-	conn            net.Conn
-	accepted        bool
-	rejected        bool
-	writePacketChan chan packet.Packet
-	readPacketChan  chan packet.Packet
-	isClosed        bool
-	disconChan      bool
-	ip              string
-	id              uint16
+	emitter        events.Emitter
+	packetHandlers map[uint16]packetHandler
+	conn           net.Conn
+	accepted       bool
+	rejected       bool
+	isClosed       bool
+	disconChan     bool
+	ip             string
+	id             uint16
 }
 
 func (this *Client) close() {
 	if !this.isClosed {
 		this.isClosed = true
 		this.conn.Close()
-		close(this.writePacketChan)
-		close(this.readPacketChan)
 		log.Printf("Клиент %v отключился", this.ip)
+		this.emitter.Emit("disconnect")
 	}
 }
 
-func createFatalErrorPacket(erorrId uint32) packet.Packet {
+func createFatalErrorPacket(erorrId uint32) *packet.Packet {
 	return packet.CreatePacketOrPanic(3102, uint32(erorrId))
 }
 
-func createErrorPacket(packetId uint16, erorrId uint32, code uint32) packet.Packet {
+func createErrorPacket(packetId uint16, erorrId uint32, code uint32) *packet.Packet {
 	return packet.CreatePacketOrPanic(1102, uint16(packetId), uint32(erorrId), uint32(code))
 }
 
-func (this *Client) sendPacket(p packet.Packet) {
+func (this *Client) sendPacket(p *packet.Packet) {
 	log.Print("\n\n->->->->->->->->->->->->->->->->\n\n", fmt.Sprintf("Исходящий пакет для [%v:%v]\n", this.ip, this.id), p.String(), "\n->->->->->->->->->->->->->->->->\n\n")
 	_, err := this.conn.Write(p.Bytes())
 	if err != nil {
@@ -55,9 +59,31 @@ func (this *Client) sendPacket(p packet.Packet) {
 	}
 }
 
-func (this *Client) startPacketWriter() {
-	for p := range this.writePacketChan {
-		this.sendPacket(p)
+func (this *Client) handlePacket(p *packet.Packet) {
+	if ph, exists := this.packetHandlers[p.Id]; exists {
+
+		// передаем id пакета в качестве параметра потому что
+		// handler потенциально может изменить Id пакета или другие его свойства, поэтому надо запомнить оригинальный Id пакеоа
+		defer func(packetId uint16) {
+			if ph.Once {
+				this.RemovePacketHandler(packetId)
+			}
+			if r := recover(); r != nil {
+				log.Printf("Возникла ошибка при обработки пакета [%d]: %s", packetId, r)
+				this.sendPacket(createErrorPacket(packetId, 2547627153, 0))
+			}
+		}(p.Id)
+
+		if ph.Struct != nil {
+			err := p.Read(ph.Struct)
+			if err != nil {
+				panic(errors.New(fmt.Sprintf("Не удалось спарсить пакет. %v", err)))
+			}
+		}
+
+		ph.Handle(p, ph.Struct)
+	} else {
+		log.Printf("Необработанный пакет [%d]", p.Id)
 	}
 }
 
@@ -79,8 +105,7 @@ func (this *Client) startPacketReader() {
 			break
 		}
 
-		var p packet.Packet
-		p, err = packet.CreatePacketFromBytes(append(bufLen, bufPac...))
+		p, err := packet.CreatePacketFromBytes(append(bufLen, bufPac...))
 
 		if err != nil {
 			break
@@ -91,7 +116,7 @@ func (this *Client) startPacketReader() {
 		}
 
 		log.Print("\n\n<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-\n\n", fmt.Sprintf("Входящий пакет от [%v:%v]", this.ip, this.id), p.String(), "\n<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-<-\n\n")
-		this.readPacketChan <- p
+		this.handlePacket(p)
 	}
 
 	if err != nil && err != io.EOF {
@@ -102,6 +127,12 @@ func (this *Client) startPacketReader() {
 	this.close()
 }
 
+func (this *Client) OnDisconnect(cb func(), once bool) {
+	this.emitter.AddEventHandler("disconnect", func(args ...interface{}) {
+		cb()
+	}, once)
+}
+
 func (this *Client) ID() uint16 {
 	return this.id
 }
@@ -110,10 +141,20 @@ func (this *Client) IP() string {
 	return this.ip
 }
 
-func (this *Client) SendPacket(p packet.Packet) {
-	if !this.isClosed {
-		this.writePacketChan <- p
+func (this *Client) SetPacketHandler(packetId uint16, handle func(p *packet.Packet, data interface{}), packetStruct interface{}, once bool) {
+	this.packetHandlers[packetId] = packetHandler{
+		Handle: handle,
+		Struct: packetStruct,
+		Once:   once,
 	}
+}
+
+func (this *Client) RemovePacketHandler(packetId uint16) {
+	delete(this.packetHandlers, packetId)
+}
+
+func (this *Client) SendPacket(p *packet.Packet) {
+	this.sendPacket(p)
 }
 
 // Разрешить подключение клиента и начать принимать пакеты.
@@ -127,10 +168,7 @@ func (this *Client) Accept() {
 	} else {
 		this.accepted = true
 	}
-
-	go this.startPacketWriter()
 	go this.startPacketReader()
-
 	this.SendPacket(acceptConnectionPacket)
 }
 
@@ -173,10 +211,10 @@ func (this *Client) FatalError(errorId uint32) {
 
 func createClient(id uint16, conn net.Conn) Client {
 	return Client{
-		conn:            conn,
-		writePacketChan: make(chan packet.Packet),
-		readPacketChan:  make(chan packet.Packet),
-		ip:              conn.RemoteAddr().(*net.TCPAddr).IP.String(),
-		id:              id,
+		packetHandlers: make(map[uint16]packetHandler),
+		conn:           conn,
+		ip:             conn.RemoteAddr().(*net.TCPAddr).IP.String(),
+		id:             id,
+		emitter:        events.CreateEmitter(),
 	}
 }

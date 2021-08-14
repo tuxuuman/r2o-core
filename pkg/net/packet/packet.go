@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 )
 
 type Packet struct {
@@ -71,7 +72,8 @@ func (this *Packet) String() string {
 		} else {
 			bRow = b[offset:]
 		}
-		result += fmt.Sprintf("%06d", rNum+1) + "    " + fmt.Sprintf("% x", bRow) + "    "
+		result += fmt.Sprintf("%06d", rNum+1) + "    " + fmt.Sprintf("% x", bRow) + "    " + strings.Repeat(" ", 16-len(bRow))
+
 		for _, c := range bRow {
 			if c >= 33 && c <= 126 {
 				result += string(c)
@@ -126,7 +128,7 @@ func (this *Packet) Read(data ...interface{}) error {
 //
 // "id" - id пакета
 // "data" - данные которые будут записаны в пакет. Должны быть значением фиксированного размера, фрагментом значений фиксированного размера или указателем на такие данные.
-func CreatePacket(id uint16, data ...interface{}) (Packet, error) {
+func CreatePacket(id uint16, data ...interface{}) (*Packet, error) {
 	packet := Packet{
 		Id:     id,
 		length: 6,
@@ -137,7 +139,7 @@ func CreatePacket(id uint16, data ...interface{}) (Packet, error) {
 	for _, d := range data {
 		err := binary.Write(dBuf, binary.LittleEndian, d)
 		if err != nil {
-			return packet, err
+			return &packet, err
 		}
 	}
 
@@ -145,17 +147,17 @@ func CreatePacket(id uint16, data ...interface{}) (Packet, error) {
 	dBufBytesLen := len(dBufBytes)
 
 	if dBufBytesLen > 65529 {
-		return packet, errors.New("Размер пакета не может превышать 65535 (uint16)")
+		return &packet, errors.New("Размер пакета не может превышать 65535 (uint16)")
 	}
 
 	packet.data = dBufBytes
 	packet.length += uint16(dBufBytesLen)
 
-	return packet, nil
+	return &packet, nil
 }
 
 // Обертка над CreatePacket, вызывающая панику в случае ошибки.
-func CreatePacketOrPanic(id uint16, data ...interface{}) Packet {
+func CreatePacketOrPanic(id uint16, data ...interface{}) *Packet {
 	p, err := CreatePacket(id, data...)
 	if err != nil {
 		panic(err)
@@ -164,13 +166,13 @@ func CreatePacketOrPanic(id uint16, data ...interface{}) Packet {
 }
 
 // Создает пакет из среза байт
-func CreatePacketFromBytes(b []byte) (Packet, error) {
+func CreatePacketFromBytes(b []byte) (*Packet, error) {
 	packet := Packet{}
 
 	headers, err := decodePacketHeaders(b)
 
 	if err != nil {
-		return packet, err
+		return &packet, err
 	}
 
 	packet.Id = headers.Id
@@ -180,11 +182,11 @@ func CreatePacketFromBytes(b []byte) (Packet, error) {
 	packet.encrypted = headers.Encrypted
 	packet.data = b[6:] // в data заголовки не нужны
 
-	return packet, nil
+	return &packet, nil
 }
 
 // Обертка над CreatePacketFromBytes, вызывающая панику в случае ошибки.
-func CreatePacketFromBytesOrPanic(b []byte) Packet {
+func CreatePacketFromBytesOrPanic(b []byte) *Packet {
 	p, err := CreatePacketFromBytes(b)
 	if err != nil {
 		panic(err)
@@ -193,17 +195,17 @@ func CreatePacketFromBytesOrPanic(b []byte) Packet {
 }
 
 // Создает пакет из hex-строки
-func CreatePacketFromHexString(hexStr string) (Packet, error) {
+func CreatePacketFromHexString(hexStr string) (*Packet, error) {
 	b, err := hex.DecodeString(hexStr)
 	if err != nil {
-		return Packet{}, err
+		return &Packet{}, err
 	} else {
 		return CreatePacketFromBytes(b)
 	}
 }
 
 // Обертка над CreatePacketFromHexString, вызывающая панику в случае ошибки.
-func CreatePacketFromHexStringOrPanic(hexStr string) Packet {
+func CreatePacketFromHexStringOrPanic(hexStr string) *Packet {
 	packet, err := CreatePacketFromHexString(hexStr)
 	if err != nil {
 		panic(err)

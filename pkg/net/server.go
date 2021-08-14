@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"sync"
 	"time"
 
 	"github.com/tuxuuman/r2o-core/pkg/net/packet"
@@ -27,7 +26,6 @@ type Server struct {
 	listener     net.Listener
 	clients      map[uint16]*Client
 	clientsCount uint16
-	mu           sync.Mutex
 	// Максимальное кол-во клиентов. при достижении лимита которого, все новые подключения будут автоматически оклонятся.
 	MaxClientsCount uint16
 	// Максимальное время ожидания подтверждения подключения клиента (По умолчанию: 10 сек).
@@ -61,7 +59,7 @@ func (this *Server) IsStarted() bool {
 // "onConnection" - коллбэк который будет вызван при подключении клиента
 // "onDisconnect" - коллбэк который будет вызван при отключении клиента
 // "onClientPacket" - коллбэк который будет вызван при получении пакета клиентом
-func (this *Server) Start(onConnection func(c *Client), onDisconnect func(c *Client), onClientPacket func(cp ClientPacket)) {
+func (this *Server) Start(onConnection func(c *Client)) {
 	if this.IsStarted() {
 		panic(errors.New("Сервер уже запущен"))
 	}
@@ -87,9 +85,6 @@ func (this *Server) Start(onConnection func(c *Client), onDisconnect func(c *Cli
 			}
 
 			func() {
-				this.mu.Lock()
-				defer this.mu.Unlock()
-
 				clId := this.genNewClientId()
 				cl := createClient(clId, conn)
 
@@ -103,36 +98,26 @@ func (this *Server) Start(onConnection func(c *Client), onDisconnect func(c *Cli
 
 				log.Printf("Подключился новый клиент %v", cl.ip)
 
-				taskChan <- func() {
-					onConnection(&cl)
-				}
-
-				go func() {
-					for packet := range cl.readPacketChan {
-						taskChan <- func() {
-							onClientPacket(ClientPacket{
-								Client: &cl,
-								Packet: &packet,
-							})
-						}
-					}
-
+				cl.OnDisconnect(func() {
 					taskChan <- func() {
-						delete(this.clients, cl.id)
+						delete(this.clients, clId)
 						this.clientsCount -= 1
-						onDisconnect(&cl)
 					}
-				}()
+				}, true)
 
 				go func() {
 					time.Sleep(time.Second * time.Duration(this.MaxClientAcceptTimeout))
 					taskChan <- func() {
 						if cl.accepted == false && cl.rejected == false {
-							log.Printf("Превышено время ожидания подтверждения подключения [%v][%v]", cl.id, cl.ip)
+							log.Printf("Превышено время ожидания подтверждения подключения [%v][%v]", clId, cl.ip)
 							cl.Reject(ERROR_IDENTIFICATION_TIMEOUT)
 						}
 					}
 				}()
+
+				taskChan <- func() {
+					onConnection(&cl)
+				}
 			}()
 		}
 	}()

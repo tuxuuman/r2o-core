@@ -43,6 +43,10 @@ func (this *Client) close() {
 	}
 }
 
+func (this *Client) Close() error {
+	return this.conn.Close()
+}
+
 func createFatalErrorPacket(erorrId uint32) *packet.Packet {
 	return packet.CreatePacketOrPanic(3102, uint32(erorrId))
 }
@@ -217,4 +221,25 @@ func createClient(id uint16, conn net.Conn) Client {
 		id:             id,
 		emitter:        events.CreateEmitter(),
 	}
+}
+
+func Connect(addr string, onConnection func(c Client), onConnectionError func(err error)) {
+	conn, err := net.Dial("tcp", addr)
+
+	if err != nil {
+		onConnectionError(err)
+		return
+	}
+
+	c := Client{
+		packetHandlers: make(map[uint16]packetHandler),
+		conn:           conn,
+		ip:             conn.RemoteAddr().(*net.TCPAddr).IP.String(),
+		id:             1,
+		emitter:        events.CreateEmitter(),
+	}
+
+	onConnection(c)
+
+	c.startPacketReader()
 }

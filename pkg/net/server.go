@@ -57,8 +57,6 @@ func (this *Server) IsStarted() bool {
 // ЗАпустить сервер
 //
 // "onConnection" - коллбэк который будет вызван при подключении клиента
-// "onDisconnect" - коллбэк который будет вызван при отключении клиента
-// "onClientPacket" - коллбэк который будет вызван при получении пакета клиентом
 func (this *Server) Start(onConnection func(c *Client)) {
 	if this.IsStarted() {
 		panic(errors.New("Сервер уже запущен"))
